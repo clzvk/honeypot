@@ -1,0 +1,70 @@
+import argparse
+import datetime
+import getpass
+from pmlog import Log, Empty
+import socket
+import sys
+import threading
+import time
+
+# Ajuste o IP e a máscara de subrede abaixo de acordo com seu honeypot
+HONEYPOT_IP = "192.168.0.100"
+SUBNET_MASK = "24"
+
+def keep_alive(sock):
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    while True:
+        try:
+            sock.sendto(b"", (HONEYPOT_IP, 23))
+            time.sleep(10)
+        except Exception as e:
+            # Trata exceções e interrompe o listener
+            print(f"[!] Falha no listener. Usuário: {getpass.getuser()}, Hora: {datetime.datetime.now()}, Erro: {e}")
+            sys.exit(0)
+
+def handle_data(data):
+    log_record = Log(date=str(datetime.datetime.now()), time=str(datetime.datetime.now().time()), user=getpass.getuser())
+    log_record.setHost(HONEYPOT_IP)
+    log_record.addEventFileDescriptor(23)
+    log_record.setSourcePort(int.from_bytes(data[:2], 'big'))
+    log_record.setDestinationPort(int.from_bytes(data[2:4], 'big'))
+    log_record.setData(data[4:])
+
+    # Grava o registro no arquivo de log
+    try:
+        log_record.__dict__["~Log__write"]()
+        print(f"[+] Conexão registrada em {log_record.date}")
+    except Empty:
+        print(f"[-] Conexão ignorada em {log_record.date}")
+
+def listener():
+    print(f"[*] Iniciando o honeypot na porta 23 do IP {HONEYPOT_IP}")
+    server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    server_sock.bind((HONEYPOT_IP, 23))
+    server_sock.setblocking(False)
+
+    keep_thread = threading.Thread(target=keep_alive, args=(server_sock,))
+    keep_thread.start()
+
+    while True:
+        try:
+            data, addr = server_sock.recvfrom(1024)
+            handle_data(data)
+        except socket.error as e:
+            print(f"[!] Erro no socket: {str(e)}")
+            continue
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Honeypot Listener")
+    parser.add_argument("-l", "--log", action="store_true", help="Ativa o registro de logs")
+    args = parser.parse_args()
+
+    if args.log:
+        log_file = open("honeypot_log.txt", "a")
+        sys.stdout = log_file
+    else:
+        log_file = None
+
+    listener()
